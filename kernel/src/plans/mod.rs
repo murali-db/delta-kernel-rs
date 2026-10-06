@@ -76,7 +76,7 @@ pub mod proto;
 pub use builder::PlanBuilder;
 use bytes::Bytes;
 pub use ir::nodes::{RelationId, RelationRef};
-pub use ir::plan::Plan;
+pub use ir::plan::{CardinalityKind, OutputCardinality, Plan};
 pub use ir::{IoOperation, Operation};
 
 use crate::{
