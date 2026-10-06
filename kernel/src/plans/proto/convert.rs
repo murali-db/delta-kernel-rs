@@ -22,7 +22,7 @@ use crate::plans::ir::nodes::{
     Agg, Aggregate, DynamicScan, FileType, Filter, Operator, Project, RelationRef, ScanFile,
     ScanJson, ScanParquet, SemiJoin, Values,
 };
-use crate::plans::ir::plan::{Plan, PlanNode};
+use crate::plans::ir::plan::{CardinalityKind, OutputCardinality, Plan, PlanNode};
 use crate::plans::{IoOperation, Operation};
 use crate::schema::{
     ArrayType, DataType, DecimalType, MapType, MetadataValue, PrimitiveType, StructField,
@@ -137,6 +137,20 @@ impl From<&PlanNode> for proto_plan::PlanNode {
         proto_plan::PlanNode {
             op: Some((&node.op).into()),
             inputs: node.inputs.iter().map(|&i| i as u32).collect(),
+            output_cardinality: node.output_cardinality.as_ref().map(Into::into),
+        }
+    }
+}
+
+impl From<&OutputCardinality> for proto_plan::OutputCardinality {
+    fn from(cardinality: &OutputCardinality) -> Self {
+        let kind = match cardinality.kind {
+            CardinalityKind::Exact => proto_plan::output_cardinality::Kind::Exact,
+            CardinalityKind::UpperBound => proto_plan::output_cardinality::Kind::UpperBound,
+        };
+        Self {
+            value: cardinality.value,
+            kind: kind as i32,
         }
     }
 }
@@ -1013,7 +1027,7 @@ mod tests {
         Agg, Aggregate, DynamicScan, FileType, Filter, Operator, Project, RelationRef, ScanFile,
         ScanJson, ScanParquet, SemiJoin, UnionAll, Values,
     };
-    use crate::plans::ir::plan::{Plan, PlanNode};
+    use crate::plans::ir::plan::{OutputCardinality, Plan, PlanNode};
     use crate::plans::proto::{
         expressions as proto_expr, operation as proto_op, plan as proto_plan,
         schema as proto_schema,
@@ -1254,12 +1268,14 @@ mod tests {
                         schema: schema.clone(),
                     }),
                     inputs: vec![],
+                    output_cardinality: None,
                 },
                 PlanNode {
                     op: Operator::Filter(Filter {
                         predicate: Arc::new(Predicate::gt(col!("id"), lit(5i32))),
                     }),
                     inputs: vec![0],
+                    output_cardinality: Some(OutputCardinality::upper_bound(17)),
                 },
             ],
         };
@@ -1284,6 +1300,12 @@ mod tests {
         let filter_node = &plan.nodes[1];
         assert_eq!(filter_node.inputs.len(), 1);
         assert_eq!(filter_node.inputs[0], 0);
+        let cardinality = filter_node.output_cardinality.as_ref().unwrap();
+        assert_eq!(cardinality.value, 17);
+        assert_eq!(
+            cardinality.kind(),
+            proto_plan::output_cardinality::Kind::UpperBound
+        );
         let Some(proto_plan::operator::Op::Filter(filter)) = &filter_node.op.as_ref().unwrap().op
         else {
             panic!("expected Filter");

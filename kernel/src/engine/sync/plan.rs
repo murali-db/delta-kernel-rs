@@ -233,7 +233,7 @@ impl SyncPlanExecutor {
         results: &[Vec<RecordBatch>],
         relation_store: Option<&RelationStore>,
     ) -> KernelResult<Vec<RecordBatch>> {
-        let PlanNode { op, inputs } = node;
+        let PlanNode { op, inputs, .. } = node;
         match op {
             Operator::ScanJson(ScanJson {
                 files,

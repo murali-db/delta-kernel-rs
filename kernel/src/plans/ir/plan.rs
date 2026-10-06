@@ -7,6 +7,39 @@ use crate::schema::SchemaRef;
 // Plan nodes
 // ============================================================================
 
+/// Whether an output cardinality is exact or only an upper bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardinalityKind {
+    Exact,
+    UpperBound,
+}
+
+/// Logical row-cardinality information for a plan node's output.
+///
+/// This describes output rows, not the physical bytes read by source operators. Connectors may
+/// use it to cost the relational plan. An upper bound must not be presented as an exact row count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputCardinality {
+    pub value: u64,
+    pub kind: CardinalityKind,
+}
+
+impl OutputCardinality {
+    pub const fn exact(value: u64) -> Self {
+        Self {
+            value,
+            kind: CardinalityKind::Exact,
+        }
+    }
+
+    pub const fn upper_bound(value: u64) -> Self {
+        Self {
+            value,
+            kind: CardinalityKind::UpperBound,
+        }
+    }
+}
+
 /// One node in a plan: an [`Operator`] and the indices of its input nodes.
 ///
 /// A node is identified by its position in [`Plan::nodes`]; `inputs` lists those indices for
@@ -17,6 +50,7 @@ use crate::schema::SchemaRef;
 pub struct PlanNode {
     pub op: Operator,
     pub inputs: Vec<usize>,
+    pub output_cardinality: Option<OutputCardinality>,
 }
 
 impl PlanNode {
@@ -25,7 +59,14 @@ impl PlanNode {
         Self {
             op: op.into(),
             inputs,
+            output_cardinality: None,
         }
+    }
+
+    /// Annotate this node with sound logical output-cardinality information.
+    pub fn with_output_cardinality(mut self, output_cardinality: OutputCardinality) -> Self {
+        self.output_cardinality = Some(output_cardinality);
+        self
     }
 }
 

@@ -45,7 +45,7 @@ use super::ir::nodes::{
     Aggregate, AggregateBuilder, DynamicScan, FileType, Filter, Operator, Project, RelationRef,
     ScanFile, ScanJson, ScanParquet, SemiJoin, UnionAll, Values,
 };
-use super::ir::plan::{Plan, PlanNode};
+use super::ir::plan::{OutputCardinality, Plan, PlanNode};
 use crate::expressions::{ColumnName, ExpressionRef, PredicateRef, Scalar, StructData};
 use crate::schema::{SchemaRef, ToSchema};
 use crate::struct_patch::ProjectionStructPatchBuilder;
@@ -60,6 +60,7 @@ struct BuilderNode {
     op: Operator,
     inputs: Vec<BuilderNodeRef>,
     schema: SchemaRef,
+    output_cardinality: Option<OutputCardinality>,
 }
 
 type BuilderNodeRef = Arc<BuilderNode>;
@@ -83,6 +84,7 @@ impl PlanBuilder {
             op: op.into(),
             inputs,
             schema,
+            output_cardinality: None,
         })))
     }
 
@@ -105,6 +107,25 @@ impl PlanBuilder {
         match self.0 {
             PlanBuilderRoot::Present(node) => Self::present(schema, op, vec![node]),
             PlanBuilderRoot::Absent(_) => Self::absent(schema),
+        }
+    }
+
+    /// Annotate this relation with sound logical output-cardinality information.
+    ///
+    /// The annotation applies to the current relation only. Add it after the operator whose
+    /// output it describes; later transforms do not inherit it automatically. An absent relation
+    /// remains absent and is emitted by [`Self::build`] with exact cardinality zero.
+    pub fn with_output_cardinality(self, output_cardinality: OutputCardinality) -> Self {
+        match self.0 {
+            PlanBuilderRoot::Present(node) => {
+                PlanBuilder(PlanBuilderRoot::Present(Arc::new(BuilderNode {
+                    op: node.op.clone(),
+                    inputs: node.inputs.clone(),
+                    schema: Arc::clone(&node.schema),
+                    output_cardinality: Some(output_cardinality),
+                })))
+            }
+            PlanBuilderRoot::Absent(schema) => Self::absent(schema),
         }
     }
 
@@ -587,10 +608,10 @@ impl PlanBuilder {
             PlanBuilderRoot::Present(root) => Self::build_plan(root),
             PlanBuilderRoot::Absent(schema) => Plan {
                 schema: Arc::clone(schema),
-                nodes: vec![PlanNode::new(
-                    Values::new(Arc::clone(schema), vec![]),
-                    vec![],
-                )],
+                nodes: vec![
+                    PlanNode::new(Values::new(Arc::clone(schema), vec![]), vec![])
+                        .with_output_cardinality(OutputCardinality::exact(0)),
+                ],
             },
         })
     }
@@ -621,7 +642,9 @@ impl PlanBuilder {
             // Recurse before `entry` so the closure borrows only `nodes`, not `emitted`.
             let inputs = Vec::from_iter(node.inputs.iter().map(|i| emit(i, nodes, emitted)));
             *emitted.entry(key).or_insert_with(|| {
-                nodes.push(PlanNode::new(node.op.clone(), inputs));
+                let mut plan_node = PlanNode::new(node.op.clone(), inputs);
+                plan_node.output_cardinality = node.output_cardinality;
+                nodes.push(plan_node);
                 nodes.len() - 1
             })
         }
@@ -762,6 +785,30 @@ mod tests {
         let src = scan(id_schema());
         assert_eq!(src.schema(), &id_schema());
         assert_plan(src, &[(&[], "scan_parquet")]);
+    }
+
+    #[test]
+    fn output_cardinality_applies_only_to_annotated_relation() -> Result<()> {
+        let plan = vals(id_schema())
+            .filter(col!("id").is_not_null())?
+            .with_output_cardinality(OutputCardinality::exact(7))
+            .build()?;
+        assert_eq!(plan.nodes[0].output_cardinality, None);
+        assert_eq!(
+            plan.nodes[1].output_cardinality,
+            Some(OutputCardinality::exact(7))
+        );
+
+        let plan = vals(id_schema())
+            .with_output_cardinality(OutputCardinality::upper_bound(9))
+            .filter(col!("id").is_not_null())?
+            .build()?;
+        assert_eq!(
+            plan.nodes[0].output_cardinality,
+            Some(OutputCardinality::upper_bound(9))
+        );
+        assert_eq!(plan.nodes[1].output_cardinality, None);
+        Ok(())
     }
 
     /// `relation_source` records the handle's id and schema and builds to a single source node.
@@ -976,6 +1023,10 @@ mod tests {
         };
         assert!(values.rows.is_empty());
         assert_eq!(values.schema, id_schema());
+        assert_eq!(
+            plan.nodes[0].output_cardinality,
+            Some(OutputCardinality::exact(0))
+        );
         Ok(())
     }
 

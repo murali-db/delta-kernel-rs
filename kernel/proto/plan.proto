@@ -165,11 +165,26 @@ message Operator {
 // PlanNode / Plan
 // ============================================================================
 
+// Optional row-cardinality information for a plan node's output. This is a logical row count,
+// independent of the physical bytes read by source operators.
+message OutputCardinality {
+  uint64 value = 1;
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    EXACT = 1;
+    UPPER_BOUND = 2;
+  }
+  Kind kind = 2;
+}
+
 message PlanNode {
   Operator op = 1;
   // Indices into `Plan.nodes` of this node's upstream inputs. Each index is strictly less than
   // this node's own index, so `nodes` can be evaluated in order.
   repeated uint32 inputs = 2;
+  // Absent when kernel cannot provide a sound cardinality for this output.
+  OutputCardinality output_cardinality = 3;
 }
 
 // The plan's terminal node is its last entry; the engine streams that node's rows.
